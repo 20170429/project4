@@ -88,12 +88,17 @@ struct inode에 추가한 extend lock을 활용하여 race condition을 방지�
 >> nonzero data, A is not allowed to see all zeros.  Explain how your
 >> code avoids this race.
 
+file extension이 발생하는 동안은 file access를 막아놓았기에 writing이 먼저 일어나게 되면 추가된 부분을 볼 수 
+있고, reading이 먼저 일어나면 볼 수 없도록 구성되었다.
+
 >> A5: Explain how your synchronization design provides "fairness".
 >> File access is "fair" if readers cannot indefinitely block writers
 >> or vice versa.  That is, many processes reading from a file cannot
 >> prevent forever another process from writing the file, and many
 >> processes writing to a file cannot prevent another process forever
 >> from reading the file.
+
+reading과 writing을 각각 요청할 때 둘 사이에 권한의 차이가 없도록 만들어졌기에 shceudling을 통해 fairly하게 각 process가 요청한 작업을 수행할 수 있도록 구현하였다.
 
 ---- RATIONALE ----
 
@@ -150,6 +155,9 @@ relative path일 경우, 시작점을 현재 thread의 작업 directory로 설�
 >> should succeed, as should only one of two simultaneous attempts to
 >> create a file with the same name, and so on.
 
+directory가 block에 access를 요청하는 것은 결국 inode에 의해 이루어지는데, C6에서 기술하였듯이 
+이 inode는 모든 process가 공유하는 자원이기에 이 inode 내 lock을 이용하여 race를 방지하였다.
+
 >> B5: Does your implementation allow a directory to be removed if it
 >> is open by a process or if it is in use as a process's current
 >> working directory?  If so, what happens to that process's future
@@ -176,14 +184,35 @@ relative path traversing이나 chdir에서 편리하게 작업을 진행할 수 
 >> `struct' member, global or static variable, `typedef', or
 >> enumeration.  Identify the purpose of each in 25 words or less.
 
+struct buffer_head
+{
+    struct inode* inode;    buffer_head마다 대응되는 inode가 있음. 
+    bool dirty;             cache에 data가 쓰여지면 dirty 상태가 됨.
+    bool used;              사용중인 cache entry를 표시
+    struct lock lock;       synchronization을 위한 lock
+    block_sector_t sector;  buffer_head마다 대응되는 sector
+    int clock_bit;          clock algorithm을 위한 parameter
+    void* data;             data pointer
+};
+
 ---- ALGORITHMS ----
 
 >> C2: Describe how your cache replacement algorithm chooses a cache
 >> block to evict.
 
+clock_hand라는 global variable이 64개의 entry마다 clock_bit를 확인한다. 
+clock_bit가 0이면 그 해당 entry를 evict하고, 그렇지 않으면 clock_bit를 0으로 설정하고 계속 탐색한다. 
+결국 한 cycle안에 무조건 evict될 entry를 찾을 수 있다.
+
 >> C3: Describe your implementation of write-behind.
 
+write 요청이 들어올 시 해당 sector의 cache가 존재하면 cache data에 우선 write하고 disk에는 기록하지 않도록 구현하였다. 
+이후 period라는 global variable을 정의하여 bc_read bc_write가 실행될 때마다 count되도록 하여 특정 값 이상이 되면
+dirty cache entry를 disk에 flush하는 write_behind 함수가 실행되도록 하였다.
+
 >> C4: Describe your implementation of read-ahead.
+
+read-ahead를 구현하지 않았으나 해당 사항을 구현하게 된다면 다음 block의 cache가 미리 형성되어 performance가 더 향상될 것으로 보인다.
 
 ---- SYNCHRONIZATION ----
 
@@ -191,10 +220,23 @@ relative path traversing이나 chdir에서 편리하게 작업을 진행할 수 
 >> buffer cache block, how are other processes prevented from evicting
 >> that block?
 
+victim selection 시 victim으로 선정된 buffer_head가 lock acquire를 시도한다. block read 또는 write 시마다
+lock acquire를 하도록 구현하였으므로 이 victim이 acquire에 바로 성공하면 reading이나 writing이 일어나지 않고 있다는 것이고, 
+바로 성공하지 못하면 reading이나 writing이 완료될 때까지 기다리게 되므로 현재 작업중인 data의 cache가 evict될 일이 없다.
+
 >> C6: During the eviction of a block from the cache, how are other
 >> processes prevented from attempting to access the block?
+
+inode.c 내 함수 중 bc_read bc_write를 호출하는 함수들에 대해서 inode가 함수 진입 시 lock을 설정하고 완료 시 해제하도록 하였다. 
+inode는 sector마다 고유하게 존재하여 inode_list에 의해 관리되므로 다른 process가 동일한 sector에 접근을 요청하여
+inode를 사용하려는 것을 대기하도록 할 수 있다.
 
 ---- RATIONALE ----
 
 >> C7: Describe a file workload likely to benefit from buffer caching,
 >> and workloads likely to benefit from read-ahead and write-behind.
+
+파일의 workoload가 많을수록 반복된 block의 사용 빈도도 늘어날 것이며 이는 buffer caching이 가져다줄 효과가 극대화됨을 의미한다. 
+마찬가지로 read-ahead는 data access가 연속적으로 이루어질 수 있도록 하므로 이로 인한 benefit이 커질 것이다.
+write behind 역시 주기적으로 dirty entry를 flush하도록 managing 해주면 disk에 직접 write하는 횟수를 줄여 performance가 좋아질 것이다.
+
