@@ -1,5 +1,5 @@
-       		 +-------------------------+
-		     |		   EE 415	       |
+       		     +-------------------------+
+		     |	       EE 415	       |
 		     | PROJECT 4: FILE SYSTEMS |
 		     |	   DESIGN DOCUMENT     |
 		     +-------------------------+
@@ -32,13 +32,54 @@ dentry cache를 구현하기 전과 구현한 후의 lg-tree에서의 performanc
 >> `struct' member, global or static variable, `typedef', or
 >> enumeration.  Identify the purpose of each in 25 words or less.
 
+1. struct inode_disk 수정
+
+1) block_sector_t start와 uint32_t unused[125]를 제거.
+2) block_sector_t direct_map_table[DIRECT_BLOCK_ENTRIES] 추가
+: direct하게 data block의 sector index를 저장하는 table. 512byte를 맞추기 위해 123개의 entry로 구성.
+3) block_sector_t indirect_block_sec 추가
+: data block의 sector index들을 저장하는 index block의 sector index
+4) block_sector_t double_indirect_block_sec 추가
+: index block들의 sector index들을 저장하는 2차 index block의 sector index.
+
+2. struct inode 수정
+
+1) struct inode_disk data 제거.
+2) struct lock extend_lock 추가
+: race condition 방지를 위함.
+
+3. enum direct_t 추가 : NORMAL_DIRECT, INDIRECT, DOUBLE_INDIRECT, OUT_LIMIT로 구성.
+
+4. struct sector_location 추가
+
+1) enum direct_t directness
+: data block이 어떤 식으로 mapping 되어있는지를 나타낸다.
+2) off_t index1
+: NORMAL_DIRECT, INDIRECT의 경우, map table의 index
+3) off_t index2
+: DOUBLE_INDIRECT의 map table index
+
+5. struct inode_indirect_block 추가
+
+1) block_sector_t map_table[INDIRECT_BLOCK_ENTRIES]
+: INDIRECT, DOUBLE_INDIRECT에서 사용하는 index block, 512byte를 맞추기 위해 128개의 entry로 구성.
+
 >> A2: What is the maximum size of a file supported by your inode
 >> structure?  Show your work.
+
+NORMAL_DIRECT -> 123 blocks
+INDIRECT -> 128 blocks
+DOUBLE_INDIREC -> 128 * 128 = 16384 blocks
+
+(123 + 128 + 16384) * 512 bytes = 8,517,120 bytes = 8.123 MB
 
 ---- SYNCHRONIZATION ----
 
 >> A3: Explain how your code avoids a race if two processes attempt to
 >> extend a file at the same time.
+
+struct inode에 추가한 extend lock을 활용하여 race condition을 방지하였다. inode_write_at에서 file이 extend가 되는 경우가 발생할 수 있는데,
+해당 상황에 extend lock을 acquire, release하여 문제가 생기지 않도록 하였다.
 
 >> A4: Suppose processes A and B both have file F open, both
 >> positioned at end-of-file.  If A reads and B writes F at the same
@@ -61,6 +102,16 @@ dentry cache를 구현하기 전과 구현한 후의 lg-tree에서의 performanc
 >> indirect blocks?  If not, why did you choose an alternative inode
 >> structure, and what advantages and disadvantages does your
 >> structure have, compared to a multilevel index?
+
+multilevel index를 활용한 inode structure를 구현하였다. 
+
+index block을 여러개 활용하면 더 큰 file을 관리할 수 있는 장점이 있다. 하지만 이는 disk 접근 횟수를 늘리기 때문에 
+전체적인 performance에 악영향을 줄 수 있다. 따라서 작은 file에 접근할 때도 속도가 느려질 수 있다.
+
+하지만 direct, indirect, doubly indirect를 함께 사용하게 되면, 작은 file의 경우 direct만 활용하여 비교적 적은 I/O로 
+file 처리가 가능하며, 적당히 큰 file까지 모두 처리할 수 있게 된다.
+
+따라서 우리는 범용성과 효율의 절충안으로써 multilevel indexing과 direct, indirect, doubly indirect를 함께 사용하였다.
 
 			    SUBDIRECTORIES
 			    ==============
